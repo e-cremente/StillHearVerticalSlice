@@ -78,6 +78,38 @@ void AChaosResonanceObj::BeginPlay()
 	// We dynamically spawn a clone, and the original actor goes invisible and forwards all interactions to the clone
 	if (!Tags.Contains(FName("DynamicallySpawned")))
 	{
+		// BeginPlay can re-run on this proxy without an EndPlay in between (streaming show/hide);
+		// don't spawn a second clone on top of an already-pending or already-live one.
+		if (bCloneSpawnPending)
+		{
+			return;
+		}
+
+		if (IsValid(ActiveClone))
+		{
+			// Disable collision immediately (Destroy() below is deferred and Chaos's own removal can
+			// lag a frame) so a physics query can't resolve this clone's body after it's been retired.
+			if (ActiveClone->CoreGeometryCollectionComponent)
+				ActiveClone->CoreGeometryCollectionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			if (ActiveClone->DebrisGeometryCollectionComponent)
+				ActiveClone->DebrisGeometryCollectionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+			// Deferred to next tick: destroying it synchronously here could race with this same
+			// AddToWorld pass still dispatching BeginPlay to other actors in this level.
+			TWeakObjectPtr<AChaosResonanceObj> WeakOldClone(ActiveClone);
+			if (UWorld* World = GetWorld())
+			{
+				World->GetTimerManager().SetTimerForNextTick([WeakOldClone]()
+				{
+					if (AChaosResonanceObj* OldClone = WeakOldClone.Get())
+					{
+						OldClone->Destroy();
+					}
+				});
+			}
+			ActiveClone = nullptr;
+		}
+
 		// Proxy must be Movable for the save system to restore its transform
 		if (RootComponent)
 			RootComponent->SetMobility(EComponentMobility::Movable);
@@ -91,7 +123,14 @@ void AChaosResonanceObj::BeginPlay()
 			if (UStillHearGameInstance* GI = World->GetGameInstance<UStillHearGameInstance>())
 			{
 				// Proxy must also listen to world reset: if the clone was destroyed (level unloaded)
-				// between sessions, only the proxy can clear bIsConsumed and re-spawn a fresh clone
+				// between sessions, only the proxy can clear bIsConsumed and re-spawn a fresh clone.
+				// Remove first: BeginPlay re-entering without an EndPlay in between (see above) would
+				// otherwise stack a duplicate binding, causing Reset/SaveCheckpointState/ClearCheckpointState
+				// to fire more than once per broadcast on this same proxy.
+				GI->OnRequestWorldReset.RemoveAll(this);
+				GI->OnCheckpointSnapshot.RemoveAll(this);
+				GI->OnClearCheckpointState.RemoveAll(this);
+
 				GI->OnRequestWorldReset.AddUObject(this, &AChaosResonanceObj::Reset);
 				GI->OnCheckpointSnapshot.AddUObject(this, &AChaosResonanceObj::SaveCheckpointState);
 				GI->OnClearCheckpointState.AddUObject(this, &AChaosResonanceObj::ClearCheckpointState);
@@ -103,10 +142,12 @@ void AChaosResonanceObj::BeginPlay()
 	}
 
 	if (!CacheColl)
+	{
 		return;
-	
+	}
+
 	CacheCollection = CacheColl;
-	
+
 	if (!CacheCollection)
 		return;
 	
@@ -169,7 +210,7 @@ void AChaosResonanceObj::BeginPlay()
 	{
 		RootComponent->SetMobility(EComponentMobility::Movable);
 	}
-	
+
 	Super::BeginPlay();
 }
 
@@ -185,10 +226,29 @@ void AChaosResonanceObj::EndPlay(const EEndPlayReason::Type EndPlayReason)
 			GI->OnClearCheckpointState.RemoveAll(this);
 		}
 	}
-	
+
 	if (ActiveClone)
 	{
-		ActiveClone->Destroy();
+		// Disable collision immediately (Destroy() below is deferred and Chaos's own removal can
+		// lag a frame) so a physics query can't resolve this clone's body after it's been retired.
+		if (ActiveClone->CoreGeometryCollectionComponent)
+			ActiveClone->CoreGeometryCollectionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		if (ActiveClone->DebrisGeometryCollectionComponent)
+			ActiveClone->DebrisGeometryCollectionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+		// Deferred to next tick: this EndPlay can fire as part of the same streaming teardown
+		// pass that is about to reach the clone itself, so destroying it here would race with that.
+		TWeakObjectPtr<AChaosResonanceObj> WeakClone(ActiveClone);
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimerForNextTick([WeakClone]()
+			{
+				if (AChaosResonanceObj* Clone = WeakClone.Get())
+				{
+					Clone->Destroy();
+				}
+			});
+		}
 		ActiveClone = nullptr;
 	}
 
@@ -213,7 +273,7 @@ void AChaosResonanceObj::SetHighlight(const bool bEnableHighlight) const
 
 	if (!OutlineMeshComponent)
 		return;
-	
+
 	OutlineMeshComponent->SetVisibility(bEnableHighlight);
 }
 #pragma endregion
@@ -222,7 +282,9 @@ void AChaosResonanceObj::SetHighlight(const bool bEnableHighlight) const
 void AChaosResonanceObj::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
 	if (!OtherActor || OtherActor == this || IsHidden() || bIsInteracting || bIsConsumed)
+	{
 		return;
+	}
 
 	SetHighlight(true);
 	
@@ -258,7 +320,7 @@ void AChaosResonanceObj::OnSphereEndOverlap(UPrimitiveComponent* OverlappedCompo
 {
 	if (!OtherActor || OtherActor == this)
 		return;
-	
+
 	SetHighlight(false);
 	
 	if (IndicatorComponent)
@@ -296,29 +358,28 @@ void AChaosResonanceObj::HandleFadeFinished()
 		DebrisGeometryCollectionComponent->SetVisibility(false, true);
 		DebrisGeometryCollectionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	}
-	
+
 	SetActorTickEnabled(false);
 	EndInteraction(PendingInteractor);
 
-	if (!bReset)
+	// Always finalize via ApplyConsumedState here regardless of bReset - it only affects a later
+	// Reset()/checkpoint revert, not this break, otherwise no-core-geometry objects never disable collision.
+	ApplyConsumedState();
+	if (IsValid(MyProxy))
 	{
-		ApplyConsumedState();
-		if (IsValid(MyProxy))
-		{
-			MyProxy->ApplyConsumedState();
-		}
+		MyProxy->ApplyConsumedState();
 	}
 }
 
-void AChaosResonanceObj::CallInteraction()
+void AChaosResonanceObj::CallInteraction(ACharacter* Interactor, const float CollisionIgnoreDelay)
 {
 	if (IsValid(ActiveClone))
 	{
-		ActiveClone->CallInteraction();
+		ActiveClone->CallInteraction(Interactor, CollisionIgnoreDelay);
 		return;
 	}
 
-	ExecuteStartInteraction();
+	ExecuteStartInteraction(Interactor, CollisionIgnoreDelay);
 }
 
 EChaosResonanceState AChaosResonanceObj::GetResonanceState() const
@@ -343,7 +404,9 @@ void AChaosResonanceObj::StartInteraction(const TObjectPtr<ACharacter> Interacto
 	}
 
 	if (bIsInteracting || GetWorldTimerManager().IsTimerActive(PreInteractionTimerHandle) || bIsConsumed)
+	{
 		return;
+	}
 
 	bIsInteracting = true;
 
@@ -353,7 +416,7 @@ void AChaosResonanceObj::StartInteraction(const TObjectPtr<ACharacter> Interacto
 		ShakeComponent->SetPreInteracting(true);
 
 		FTimerDelegate TimerDel;
-		TimerDel.BindUObject(this, &AChaosResonanceObj::ExecuteStartInteraction, PendingInteractor);
+		TimerDel.BindUObject(this, &AChaosResonanceObj::ExecuteStartInteraction, PendingInteractor, 0.0f);
 		GetWorldTimerManager().SetTimer(PreInteractionTimerHandle, TimerDel, ShakeComponent->GetPreInteractionDuration(), false);
 	}
 	else
@@ -362,8 +425,15 @@ void AChaosResonanceObj::StartInteraction(const TObjectPtr<ACharacter> Interacto
 	}
 }
 
-void AChaosResonanceObj::ExecuteStartInteraction(const TObjectPtr<ACharacter> Interactor)
+void AChaosResonanceObj::ExecuteStartInteraction(const TObjectPtr<ACharacter> Interactor, const float CollisionIgnoreDelay)
 {
+	// Guard against re-entrant calls (CallInteraction/TriggerInteraction can reach this directly,
+	// bypassing StartInteraction's guard), which would restart Chaos cache playback mid-break.
+	if (bIsConsumed)
+	{
+		return;
+	}
+
 	// Broadcast to Blueprint listeners regardless of activation path (resonance or trigger component)
 	OnTriggeredBy.Broadcast(PendingTriggerer.Get());
 	PendingTriggerer = nullptr;
@@ -457,7 +527,9 @@ void AChaosResonanceObj::ExecuteStartInteraction(const TObjectPtr<ACharacter> In
 		}
 	}
 	
-	// Notify the interactor's ability system that the interaction succeeded
+	// Notify the interactor's ability system that the interaction succeeded.
+	// Interactor is only set when the caller explicitly wants this treatment (see CallInteraction) -
+	// leave it unset for triggers that shouldn't touch the interactor's collision at all.
 	if (Interactor)
 	{
 		if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Interactor))
@@ -474,8 +546,23 @@ void AChaosResonanceObj::ExecuteStartInteraction(const TObjectPtr<ACharacter> In
 			}
 		}
 
-		// Ignore resonance collision on the player during destruction
-		if (UCapsuleComponent* CapsuleComponent = Interactor->GetCapsuleComponent())
+		// Ignore resonance collision on the player during destruction. Delayed if CollisionIgnoreDelay > 0
+		if (CollisionIgnoreDelay > 0.0f)
+		{
+			TWeakObjectPtr<ACharacter> WeakInteractor(Interactor.Get());
+			FTimerHandle IgnoreCollisionTimerHandle;
+			GetWorldTimerManager().SetTimer(IgnoreCollisionTimerHandle, [WeakInteractor]()
+			{
+				if (ACharacter* Char = WeakInteractor.Get())
+				{
+					if (UCapsuleComponent* CapsuleComponent = Char->GetCapsuleComponent())
+					{
+						CapsuleComponent->SetCollisionResponseToChannel(ECustomCollision::Resonance, ECR_Ignore);
+					}
+				}
+			}, CollisionIgnoreDelay, false);
+		}
+		else if (UCapsuleComponent* CapsuleComponent = Interactor->GetCapsuleComponent())
 		{
 			CapsuleComponent->SetCollisionResponseToChannel(ECustomCollision::Resonance, ECR_Ignore);
 		}
@@ -593,7 +680,9 @@ void AChaosResonanceObj::Reset()
 
 	// Guard against stale delegates from actors whose sublevel was hidden/unloaded
 	if (!IsValid(this) || !GetWorld())
+	{
 		return;
+	}
 
 	bool bForceNewGame = false;
 	if (const UWorld* World = GetWorld())

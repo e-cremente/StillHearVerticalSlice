@@ -53,7 +53,7 @@ void ADrivableObj::BeginPlay()
 		Mesh->SetCollisionObjectType(ECustomCollision::Interactable);
 	}
 
-	if (InteractNiagaraComponent && NiagaraVFXPartIndex >= 0 && ResolvedMeshes.IsValidIndex(NiagaraVFXPartIndex) && ResolvedMeshes[NiagaraVFXPartIndex])
+	if (InteractNiagaraComponent && NiagaraVFXPartIndex >= 0 && ResolvedMeshes.IsValidIndex(NiagaraVFXPartIndex) && IsValid(ResolvedMeshes[NiagaraVFXPartIndex]))
 	{
 		InteractNiagaraComponent->AttachToComponent(
 			ResolvedMeshes[NiagaraVFXPartIndex],
@@ -67,7 +67,7 @@ void ADrivableObj::BeginPlay()
 	// Pre-compute the delta between start and end for each part
 	for (int32 i = 0; i < DrivableParts.Num(); i++)
 	{
-		if (!ResolvedMeshes[i])
+		if (!IsValid(ResolvedMeshes[i]))
 			continue;
 
 		FDrivablePart& Part = DrivableParts[i];
@@ -196,7 +196,7 @@ void ADrivableObj::ExecuteStartInteraction(const TObjectPtr<ACharacter> Interact
 		// Accumulate transforms for consecutive non-reversing interactions
 		for (int32 i = 0; i < DrivableParts.Num(); i++)
 		{
-			if (!ResolvedMeshes.IsValidIndex(i) || !ResolvedMeshes[i])
+			if (!ResolvedMeshes.IsValidIndex(i) || !IsValid(ResolvedMeshes[i]))
 				continue;
 
 			FDrivablePart& Part = DrivableParts[i];
@@ -316,7 +316,7 @@ void ADrivableObj::Reset()
 	// Restore all parts to their cached start transforms or checkpoint transforms
 	for (int32 i = 0; i < DrivableParts.Num(); i++)
 	{
-		if (!ResolvedMeshes.IsValidIndex(i) || !ResolvedMeshes[i])
+		if (!ResolvedMeshes.IsValidIndex(i) || !IsValid(ResolvedMeshes[i]))
 			continue;
 
 		if (bFromSnapshot && CheckpointPartsTransforms.IsValidIndex(i))
@@ -356,7 +356,7 @@ void ADrivableObj::SaveCheckpointState()
 
 	for (int32 i = 0; i < DrivableParts.Num(); i++)
 	{
-		if (ResolvedMeshes.IsValidIndex(i) && ResolvedMeshes[i])
+		if (ResolvedMeshes.IsValidIndex(i) && IsValid(ResolvedMeshes[i]))
 		{
 			if (bIsCurrentlyMoving)
 			{
@@ -396,7 +396,7 @@ void ADrivableObj::HandleTimelineProgress(const float Value) const
 {
 	for (int32 i = 0; i < DrivableParts.Num(); i++)
 	{
-		if (!ResolvedMeshes.IsValidIndex(i) || !ResolvedMeshes[i])
+		if (!ResolvedMeshes.IsValidIndex(i) || !IsValid(ResolvedMeshes[i]))
 			continue;
 
 		FTransform CurrentTransform;
@@ -449,7 +449,7 @@ void ADrivableObj::HandleTimelineFinished()
 	// Propagate trigger to all linked interactable objects
 	for (const TObjectPtr LinkedObj : LinkedTriggeredObjs)
 	{
-		if (LinkedObj && LinkedObj->Implements<UInteractable>())
+		if (IsValid(LinkedObj) && LinkedObj->Implements<UInteractable>())
 			LinkedObj->TriggerInteraction(this);
 	}
 

@@ -25,10 +25,6 @@ public:
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AbilitySystem")
 	TArray<TSubclassOf<UGameplayAbility>> StartingAbilities;
-
-	// Prevents granting StartingAbilities again on a subsequent PossessedBy (e.g. AI controller re-possession),
-	// which would otherwise create duplicate ability specs and cause GameplayEvents to trigger them twice
-	bool bStartingAbilitiesGranted = false;
 #pragma endregion
 
 #pragma region CONSTRUCTOR
@@ -64,6 +60,11 @@ protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 	virtual void PossessedBy(AController* NewController) override;
+
+	// Grants any StartingAbilities that are not currently present on the ASC.
+	// Idempotent: safe to call on every PossessedBy. Restores abilities when a streaming
+	// visibility toggle destroyed/respawned the AIController and cleared the ability specs.
+	void GrantMissingStartingAbilities();
 	
 	virtual void OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 PreviousCustomMode) override;
 

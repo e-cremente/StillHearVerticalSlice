@@ -1,14 +1,15 @@
 #include "GameplayAbilitySystem/Abilities/GA_Resonance.h"
 
+#include "Interfaces/Interactable.h"
+#include "Data/DataAssets/ResonanceData.h"
 #include "VFX/ResonanceManagerComponent.h"
 #include "Character/StillHearMainCharacter.h"
-#include "GameplayAbilitySystem/Tags/GameplayTags.h"
-#include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
-#include "Camera/CameraEffects/CameraEffectsComponent.h"
-#include "Data/DataAssets/ResonanceData.h"
-#include "Interfaces/Interactable.h"
 #include "TraceAndCollision/CustomCollision.h"
 #include "GameFramework/ForceFeedbackEffect.h"
+#include "Interactions/Actors/ChaosResonanceObj.h"
+#include "GameplayAbilitySystem/Tags/GameplayTags.h"
+#include "Camera/CameraEffects/CameraEffectsComponent.h"
+#include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 
 #pragma region CONSTRUCTOR
 UGA_Resonance::UGA_Resonance()
@@ -38,7 +39,7 @@ void UGA_Resonance::ActivateAbility(const FGameplayAbilitySpecHandle Handle, con
 	CachedPlayerController = Cast<APlayerController>(Character->GetController());
 	if (CachedPlayerController)
 		CachedCameraEffectComponent = CachedPlayerController->GetComponentByClass(UCameraEffectsComponent::StaticClass()) ? Cast<UCameraEffectsComponent>(CachedPlayerController->GetComponentByClass(UCameraEffectsComponent::StaticClass())) : nullptr;
-	
+
 	ResonanceManager = Character->GetResonanceManagerComponent();
 	if (!ResonanceManager)
 	{
@@ -47,7 +48,7 @@ void UGA_Resonance::ActivateAbility(const FGameplayAbilitySpecHandle Handle, con
 	}
 
 	FindValidResonanceObjects();
-	
+
 	ResonanceManager->OnResonanceSuccess.AddDynamic(this, &UGA_Resonance::OnResonanceSuccess);
 	ResonanceManager->OnResonanceInterrupted.AddDynamic(this, &UGA_Resonance::OnResonanceInterrupted);
 	ResonanceManager->StartResonance();
@@ -99,7 +100,7 @@ void UGA_Resonance::ActivateAbility(const FGameplayAbilitySpecHandle Handle, con
 void UGA_Resonance::EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled)
 {
 	CurrentResonanceObjects.Empty();
-	
+
 	if (ResonanceManager)
 	{
 		ResonanceManager->OnResonanceSuccess.RemoveDynamic(this, &UGA_Resonance::OnResonanceSuccess);
@@ -138,6 +139,13 @@ void UGA_Resonance::FindValidResonanceObjects()
 			AActor* Obj = Result.GetActor();
 			if (Obj && Obj->Implements<UInteractable>() && Obj->Implements<UGameplayTagAssetInterface>())
 			{
+				// Skip objects already broken/breaking so a second activation can't re-target them.
+				if (const AChaosResonanceObj* ResonanceObj = Cast<AChaosResonanceObj>(Obj))
+				{
+					if (ResonanceObj->GetResonanceState() != EChaosResonanceState::Intact)
+						continue;
+				}
+
 				const IGameplayTagAssetInterface* TagInterface = Cast<IGameplayTagAssetInterface>(Obj);
 				if (TagInterface && TagInterface->HasAnyMatchingGameplayTags(ResonanceData->ResonanceTags))
 					CurrentResonanceObjects.Add(Obj);
@@ -170,10 +178,13 @@ void UGA_Resonance::OnResonanceSuccess()
 		CachedCameraEffectComponent->StopAllEffects();
 		CachedCameraEffectComponent->PlayEffectPreset(ResonanceData->SuccessEffectPreset);
 	}
-	
-	// Trigger interaction on all previously found objects
-	for (AActor* Obj : CurrentResonanceObjects)
+
+	// Objects were captured at activation time; skip any that got destroyed/replaced before this fired.
+	for (const TObjectPtr<AActor>& Obj : CurrentResonanceObjects)
 	{
+		if (!IsValid(Obj))
+			continue;
+
 		if (IInteractable* Interactable = Cast<IInteractable>(Obj))
 			Interactable->StartInteraction(Cast<ACharacter>(GetAvatarActorFromActorInfo()));
 	}

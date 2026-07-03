@@ -9,6 +9,7 @@
 #include "Kismet/KismetMathLibrary.h"
 #include "Perception/AISense_Touch.h"
 #include "TraceAndCollision/CustomCollision.h"
+#include "GameplayAbilitySystem/Tags/GameplayTags.h"
 
 AAIWormCharacter::AAIWormCharacter()
 {
@@ -131,7 +132,14 @@ void AAIWormCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	InitialCapsuleRotation = HeadCollider->GetComponentRotation();
+	// Capture the head's neutral rest rotation only once. BeginPlay re-runs every time the worm's
+	// streaming level is made visible again, but by then AdjustCapsuleRotation has left the head in a
+	// rotated pose; re-capturing would accumulate that offset and displace all head-attached VFX.
+	if (!bCapsuleRotationInitialized)
+	{
+		InitialCapsuleRotation = HeadCollider->GetComponentRotation();
+		bCapsuleRotationInitialized = true;
+	}
 
 	HeadCollider->OnComponentHit.AddUniqueDynamic(this, &ThisClass::ReportTouchEvent);
 	BodyCollider->OnComponentHit.AddUniqueDynamic(this, &ThisClass::ReportTouchEvent);
@@ -146,6 +154,24 @@ void AAIWormCharacter::BeginPlay()
 	TailCollider->OnComponentEndOverlap.AddUniqueDynamic(this, &ThisClass::HandleOverlapExit);
 
 	HeadCollider->OnComponentBeginOverlap.AddUniqueDynamic(this, &ThisClass::HandleHeadHitCharacter);
+}
+
+void AAIWormCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// When this worm's streaming level is hidden, its AIController is destroyed and nobody removes the
+	// looping GroundDebris gameplay cue. That leaves the cue notify actor latched (OnRemove never runs)
+	// with its VFX attached to a component that is about to unregister, so on the next show the cue can
+	// no longer respawn its VFX. Remove the cue here, while the components are still valid, so OnRemove
+	// runs and tears the VFX down cleanly; the movement code then re-adds it fresh on the next show.
+	if (EndPlayReason == EEndPlayReason::RemovedFromWorld)
+	{
+		if (UAbilitySystemComponent* ASC = GetAbilitySystemComponent())
+		{
+			ASC->RemoveGameplayCue(TAG_GameplayCue_GroundDebris);
+		}
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AAIWormCharacter::Tick(float DeltaSeconds)

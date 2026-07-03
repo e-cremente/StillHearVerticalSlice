@@ -32,6 +32,12 @@ private:
 	UPROPERTY()
 	FRotator InitialCapsuleRotation;
 
+	// True once InitialCapsuleRotation has been captured in the head's neutral rest pose.
+	// Prevents re-capturing it on a subsequent BeginPlay (level streaming re-shows the worm and
+	// re-runs BeginPlay with the head already rotated), which would bake an offset into the head
+	// rotation and displace every head-attached VFX.
+	bool bCapsuleRotationInitialized = false;
+
 	UPROPERTY()
 	TArray<AStillHearAICharacterBase*> NearbyAICharacters;
 #pragma endregion
@@ -63,6 +69,7 @@ public:
 	virtual void SetCollision(const TArray<TEnumAsByte<ECollisionChannel>>& Channels, bool bIgnore) override;
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 
 private:

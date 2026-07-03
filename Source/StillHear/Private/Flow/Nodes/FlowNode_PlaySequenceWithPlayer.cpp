@@ -83,6 +83,8 @@ void UFlowNode_PlaySequenceWithPlayer::ExecuteInput(const FName& PinName)
 				}
 
 				TriggerOutput(TEXT("Started"));
+
+				OnPlaybackStarted.Broadcast();
 			}
 		}
 

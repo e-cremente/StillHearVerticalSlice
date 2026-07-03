@@ -31,6 +31,11 @@ void UInteractableLinkTimerComponent::BeginPlay()
 
 	for (int32 i = 0; i < Count; ++i)
 	{
+		// SetNum() above doesn't clear each element's inner Mats array, so repeated BeginPlay calls
+		// (level-streaming reloads) kept appending materials instead of replacing them.
+		EmissiveMaterials[i].Mats.Empty();
+		TimerMaterials[i].Mats.Empty();
+
 		AInteractableObj* Source = LinkedSources[i].Source.Get();
 		ResolvedSources[i] = Source;
 
@@ -59,7 +64,13 @@ void UInteractableLinkTimerComponent::BeginPlay()
 
 			for (USplineMeshComponent* SMC : SplineMeshes)
 			{
-				if (UMaterialInstanceDynamic* DynMat = SMC->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].EmissiveMaterialIndex))
+				// Reuse an already-created dynamic instance instead of always creating a fresh one: recreating
+				// the MID on every reload restarts any time-based effect baked into the material graph.
+				if (UMaterialInstanceDynamic* ExistingMat = Cast<UMaterialInstanceDynamic>(SMC->GetMaterial(LinkedSources[i].EmissiveMaterialIndex)))
+				{
+					EmissiveMaterials[i].Mats.Add(ExistingMat);
+				}
+				else if (UMaterialInstanceDynamic* DynMat = SMC->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].EmissiveMaterialIndex))
 				{
 					DynMat->SetScalarParameterValue(EmissiveParameterName, 0.0f);
 					EmissiveMaterials[i].Mats.Add(DynMat);
@@ -68,7 +79,11 @@ void UInteractableLinkTimerComponent::BeginPlay()
 		}
 		else if (UMeshComponent* Mesh = Cast<UMeshComponent>(LinkedSources[i].EmissiveMesh.GetComponent(GetOwner())))
 		{
-			if (UMaterialInstanceDynamic* DynMat = Mesh->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].EmissiveMaterialIndex))
+			if (UMaterialInstanceDynamic* ExistingMat = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(LinkedSources[i].EmissiveMaterialIndex)))
+			{
+				EmissiveMaterials[i].Mats.Add(ExistingMat);
+			}
+			else if (UMaterialInstanceDynamic* DynMat = Mesh->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].EmissiveMaterialIndex))
 			{
 				DynMat->SetScalarParameterValue(EmissiveParameterName, 0.0f);
 				EmissiveMaterials[i].Mats.Add(DynMat);
@@ -95,7 +110,12 @@ void UInteractableLinkTimerComponent::BeginPlay()
 
 			for (USplineMeshComponent* SMC : SplineMeshes)
 			{
-				if (UMaterialInstanceDynamic* DynMat = SMC->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].TimerMaterialIndex))
+				// Reuse an existing dynamic instance for the same reason as the emissive material above.
+				if (UMaterialInstanceDynamic* ExistingMat = Cast<UMaterialInstanceDynamic>(SMC->GetMaterial(LinkedSources[i].TimerMaterialIndex)))
+				{
+					TimerMaterials[i].Mats.Add(ExistingMat);
+				}
+				else if (UMaterialInstanceDynamic* DynMat = SMC->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].TimerMaterialIndex))
 				{
 					DynMat->SetScalarParameterValue(TimerParameterName, 0.0f);
 					TimerMaterials[i].Mats.Add(DynMat);
@@ -104,7 +124,11 @@ void UInteractableLinkTimerComponent::BeginPlay()
 		}
 		else if (UMeshComponent* Mesh = Cast<UMeshComponent>(LinkedSources[i].TimerMesh.GetComponent(GetOwner())))
 		{
-			if (UMaterialInstanceDynamic* DynMat = Mesh->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].TimerMaterialIndex))
+			if (UMaterialInstanceDynamic* ExistingMat = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(LinkedSources[i].TimerMaterialIndex)))
+			{
+				TimerMaterials[i].Mats.Add(ExistingMat);
+			}
+			else if (UMaterialInstanceDynamic* DynMat = Mesh->CreateAndSetMaterialInstanceDynamic(LinkedSources[i].TimerMaterialIndex))
 			{
 				DynMat->SetScalarParameterValue(TimerParameterName, 0.0f);
 				TimerMaterials[i].Mats.Add(DynMat);
@@ -126,6 +150,10 @@ void UInteractableLinkTimerComponent::BeginPlay()
 void UInteractableLinkTimerComponent::TickComponent(const float DeltaTime, const ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	// Clamp against frame hitches (e.g. a level streaming load stalling the game thread): an unclamped
+	// DeltaTime would let FInterpConstantTo/FInterpTo snap almost instantly instead of animating.
+	const float ClampedDeltaTime = FMath::Min(DeltaTime, 0.1f);
 
 	const float TimerRemaining = (Timeout > 0.0f) ? FMath::Clamp(1.0f - (GetWorld()->GetTimeSeconds() - TimerStartTime) / Timeout, 0.0f, 1.0f) : 0.0f;
 
@@ -150,7 +178,7 @@ void UInteractableLinkTimerComponent::TickComponent(const float DeltaTime, const
 		if (!FMath::IsNearlyEqual(TimerCurrentValues[i], TargetTimerVal, KINDA_SMALL_NUMBER))
 		{
 			const float Speed = FMath::Max(EmissiveInterpSpeed, (Timeout > 0.0f ? 1.0f / Timeout : 1.0f) * 1.5f);
-			TimerCurrentValues[i] = FMath::FInterpConstantTo(TimerCurrentValues[i], TargetTimerVal, DeltaTime, Speed);
+			TimerCurrentValues[i] = FMath::FInterpConstantTo(TimerCurrentValues[i], TargetTimerVal, ClampedDeltaTime, Speed);
 			bNeedsTick = true;
 		}
 
@@ -190,7 +218,7 @@ void UInteractableLinkTimerComponent::TickComponent(const float DeltaTime, const
 		// Interpolate Emissive
 		if (!FMath::IsNearlyEqual(EmissiveCurrentValues[i], EmissiveTargetValues[i], KINDA_SMALL_NUMBER))
 		{
-			EmissiveCurrentValues[i] = FMath::FInterpTo(EmissiveCurrentValues[i], EmissiveTargetValues[i], DeltaTime, EmissiveInterpSpeed);
+			EmissiveCurrentValues[i] = FMath::FInterpTo(EmissiveCurrentValues[i], EmissiveTargetValues[i], ClampedDeltaTime, EmissiveInterpSpeed);
 
 			const int32 NumMats = EmissiveMaterials[i].Mats.Num();
 			if (NumMats == 1 && EmissiveMaterials[i].Mats[0])
@@ -359,7 +387,7 @@ void UInteractableLinkTimerComponent::StopTimer()
 void UInteractableLinkTimerComponent::Reset()
 {
 	StopTimer();
-	
+
 	const bool bFromSnapshot = bHasTimerCheckpointSnapshot;
 	bIsCompleted = bFromSnapshot ? bCheckpointIsCompleted : false;
 	
@@ -385,6 +413,35 @@ void UInteractableLinkTimerComponent::Reset()
 		}
 		
 		ActivatedFlags[i] = bNewFlag;
+
+		// If this entry is being deactivated, snap its visuals to the off state immediately instead of
+		// leaving Tick to animate there, since a level reload can interrupt a countdown mid-flight.
+		if (!bNewFlag)
+		{
+			if (TimerCurrentValues.IsValidIndex(i))
+				TimerCurrentValues[i] = 0.0f;
+			if (EmissiveTargetValues.IsValidIndex(i))
+				EmissiveTargetValues[i] = 0.0f;
+			if (EmissiveCurrentValues.IsValidIndex(i))
+				EmissiveCurrentValues[i] = 0.0f;
+
+			if (TimerMaterials.IsValidIndex(i))
+			{
+				for (UMaterialInstanceDynamic* Mat : TimerMaterials[i].Mats)
+				{
+					if (Mat)
+						Mat->SetScalarParameterValue(TimerParameterName, 0.0f);
+				}
+			}
+			if (EmissiveMaterials.IsValidIndex(i))
+			{
+				for (UMaterialInstanceDynamic* Mat : EmissiveMaterials[i].Mats)
+				{
+					if (Mat)
+						Mat->SetScalarParameterValue(EmissiveParameterName, 0.0f);
+				}
+			}
+		}
 	}
 
 	SetComponentTickEnabled(true);

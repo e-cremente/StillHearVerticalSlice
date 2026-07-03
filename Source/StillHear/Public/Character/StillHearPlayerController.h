@@ -195,6 +195,7 @@ protected:
 	virtual void EndPlay(EEndPlayReason::Type Reason) override;
 	
 	void OnCinematicFinished();
+	void OnCinematicStarted();
 
 	UFUNCTION()
 	void PushMainMenuWidget();

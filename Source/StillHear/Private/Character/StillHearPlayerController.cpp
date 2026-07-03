@@ -85,6 +85,7 @@ void AStillHearPlayerController::BeginPlay()
 	RegisterPlayerActivity();
 
 	UFlowNode_PlayLevelSequence::OnPlaybackCompleted.AddUObject(this, &ThisClass::OnCinematicFinished);
+	UFlowNode_PlayLevelSequence::OnPlaybackStarted.AddUObject(this, &ThisClass::OnCinematicStarted);
 }
 
 void AStillHearPlayerController::Tick(float DeltaSeconds)
@@ -102,7 +103,8 @@ void AStillHearPlayerController::EndPlay(const EEndPlayReason::Type Reason)
 	InputSubsystem->RemoveMappingContext(GamepadMappingContext);
 	
 	UFlowNode_PlayLevelSequence::OnPlaybackCompleted.RemoveAll(this);
-	
+	UFlowNode_PlayLevelSequence::OnPlaybackStarted.RemoveAll(this);
+
 	Super::EndPlay(Reason);
 }
 
@@ -373,6 +375,17 @@ void AStillHearPlayerController::ChangeCamera(class ACameraVolume* CameraVolume,
 	}
 	
 	SetViewTargetWithBlend(CameraVolume, LastCameraVolume->GetBlendTimeOnExit(), LastCameraVolume->GetBlendFunction(), LastCameraVolume->GetBlendExp(), true);
+}
+
+void AStillHearPlayerController::OnCinematicStarted()
+{
+	if (!CharacterRef)
+		return;
+
+	if (UAbilitySystemComponent* ASC = CharacterRef->GetAbilitySystemComponent())
+	{
+		ASC->CancelAbilities();
+	}
 }
 
 void AStillHearPlayerController::OnCinematicFinished()

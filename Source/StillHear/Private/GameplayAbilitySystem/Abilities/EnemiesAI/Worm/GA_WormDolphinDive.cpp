@@ -24,7 +24,7 @@ UGA_WormDolphinDive::UGA_WormDolphinDive()
 	ActivationOwnedTags.AddTag(TAG_GameplayAbility_EnemyAI_WormDolphinDive_Active);
 	ActivationOwnedTags.AddTag(TAG_GameplayAbility_EnemyAI_Attack_Active);
 
-	ActivationBlockedTags.AddTag(TAG_GameplayAbility_EnemyAI_WormDolphinDive);
+	ActivationBlockedTags.AddTag(TAG_GameplayAbility_EnemyAI_WormDolphinDive_Active);
 }
 
 void UGA_WormDolphinDive::OnMovementModeChange(EMovementMode NewMode)

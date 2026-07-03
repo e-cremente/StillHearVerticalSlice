@@ -178,15 +178,18 @@ public:
 	UFUNCTION()
 	void HandleFadeFinished();
 	
+	// Interactor is optional: pass it when this trigger should also make the interactor ignore the
+	// Resonance collision channel during the break. Leave it unset for triggers that should NOT touch the interactor's collision at all.
+	// CollisionIgnoreDelay (seconds, default 0 = immediate) delays making the interactor ignore the Resonance collision
 	UFUNCTION(BlueprintCallable, Category="ChaosResonance")
-	void CallInteraction();
+	void CallInteraction(ACharacter* Interactor = nullptr, float CollisionIgnoreDelay = 0.0f);
 
 	UFUNCTION(BlueprintPure, Category = "ChaosResonance")
 	EChaosResonanceState GetResonanceState() const;
 	UFUNCTION(BlueprintCallable, Category = "ChaosResonance")
 	virtual void TriggerInteraction(AActor* Triggerer = nullptr) override;
 
-	virtual void ExecuteStartInteraction(TObjectPtr<ACharacter> Interactor = nullptr);
+	virtual void ExecuteStartInteraction(TObjectPtr<ACharacter> Interactor = nullptr, float CollisionIgnoreDelay = 0.0f);
 
 	// The clone spawned to bypass streaming bugs. The original actor forwards interactions to this clone
 	UPROPERTY(BlueprintReadOnly, Category = "Resonance")

@@ -44,6 +44,33 @@ TArray<FGameplayAbilitySpecHandle> AStillHearCharacterBase::GrantAbilities(TArra
 	return AbilityHandles;
 }
 
+void AStillHearCharacterBase::GrantMissingStartingAbilities()
+{
+	if (!AbilitySystemComponent)
+		return;
+
+	// Build the subset of StartingAbilities that the ASC does NOT already have a spec for.
+	// FindAbilitySpecFromClass returns nullptr when no granted spec of that class exists.
+	TArray<TSubclassOf<UGameplayAbility>> MissingAbilities;
+	for (const TSubclassOf<UGameplayAbility>& AbilityClass : StartingAbilities)
+	{
+		if (!AbilityClass)
+			continue;
+
+		if (AbilitySystemComponent->FindAbilitySpecFromClass(AbilityClass) == nullptr)
+		{
+			MissingAbilities.Add(AbilityClass);
+		}
+	}
+
+	// Only touch the ASC (and fire the abilities-changed event) when there is actually
+	// something to grant, so repeated possessions with intact abilities are a no-op.
+	if (MissingAbilities.Num() > 0)
+	{
+		GrantAbilities(MissingAbilities);
+	}
+}
+
 void AStillHearCharacterBase::RemoveAbilities(TArray<FGameplayAbilitySpecHandle> AbilityHandlesToRemove)
 {
 	if (!AbilitySystemComponent)
@@ -79,13 +106,15 @@ void AStillHearCharacterBase::PossessedBy(AController* NewController)
 
 	if (AbilitySystemComponent)
 	{
+		// Refresh the ability actor info against the (possibly rebuilt) avatar/owner.
 		AbilitySystemComponent->InitAbilityActorInfo(this, this);
 
-		if (!bStartingAbilitiesGranted)
-		{
-			GrantAbilities(StartingAbilities);
-			bStartingAbilitiesGranted = true;
-		}
+		// Idempotently (re)grant the StartingAbilities. A streaming visibility toggle destroys and
+		// respawns the AIController, and that teardown clears the granted ability specs from the ASC.
+		// The previous one-shot guard (bStartingAbilitiesGranted) then blocked re-granting, leaving the
+		// pawn with zero abilities forever. Granting only the missing ones restores them on re-possess
+		// without ever creating duplicates.
+		GrantMissingStartingAbilities();
 	}
 }
 
